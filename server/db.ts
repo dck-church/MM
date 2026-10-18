@@ -1,17 +1,10 @@
 import fs from 'fs';
 import path from 'path';
-import { Pool } from 'pg';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { Pool, PoolClient } from 'pg';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'database.json');
-const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
-
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-}
 
 export interface User {
   id: string;
@@ -321,6 +314,10 @@ class JsonDatabase {
   private data: DatabaseSchema;
   private pool: Pool | null = null;
   private saveQueue: Promise<void> = Promise.resolve();
+  private requestContext = new AsyncLocalStorage<{
+    client: PoolClient;
+    saveQueue: Promise<void>;
+  }>();
 
   constructor() {
     this.data = this.load();
@@ -335,6 +332,7 @@ class JsonDatabase {
   }
 
   private saveData(dataToSave: DatabaseSchema) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
     const tempFile = `${DB_FILE}.tmp.${Date.now()}`;
     fs.writeFileSync(tempFile, JSON.stringify(dataToSave, null, 2), 'utf-8');
     fs.renameSync(tempFile, DB_FILE);
@@ -426,6 +424,19 @@ class JsonDatabase {
     }
 
     const snapshot = JSON.stringify(this.data);
+    const request = this.requestContext.getStore();
+    if (request) {
+      const pendingSave = request.saveQueue.then(async () => {
+        await request.client.query(
+          "UPDATE public.app_state SET payload = $1::jsonb, updated_at = now() WHERE id = 'main'",
+          [snapshot]
+        );
+      });
+      request.saveQueue = pendingSave;
+      void pendingSave.catch(() => {});
+      return pendingSave;
+    }
+
     const pendingSave = this.saveQueue.catch(() => {}).then(async () => {
       await this.pool!.query(
         "UPDATE public.app_state SET payload = $1::jsonb, updated_at = now() WHERE id = 'main'",
@@ -438,7 +449,42 @@ class JsonDatabase {
   }
 
   public flush(): Promise<void> {
-    return this.saveQueue;
+    return this.requestContext.getStore()?.saveQueue || this.saveQueue;
+  }
+
+  public async withExclusiveRequest<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.pool) {
+      throw new Error('Supabase storage must be initialized before serving Netlify requests.');
+    }
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(721991042)');
+      const result = await client.query<{ payload: DatabaseSchema }>(
+        "SELECT payload FROM public.app_state WHERE id = 'main' FOR UPDATE"
+      );
+      const latestData = result.rows[0]?.payload;
+      if (!latestData || !this.isDatabaseSchema(latestData)) {
+        throw new Error('The Supabase app_state row is missing or has an invalid data shape.');
+      }
+      this.data = latestData;
+
+      const request = { client, saveQueue: Promise.resolve() };
+      const response = await this.requestContext.run(request, operation);
+      await request.saveQueue;
+      await client.query('COMMIT');
+      return response;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Failed to roll back Supabase request transaction:', rollbackError);
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   public getRawData(): DatabaseSchema {

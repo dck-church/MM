@@ -26,14 +26,17 @@ interface DashboardProps {
 export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchSummary = async () => {
     try {
       setLoading(true);
       const data = await api.getDashboardSummary();
       setSummary(data);
+      setError(null);
     } catch (err) {
       console.error('Failed to load dashboard:', err);
+      setError(err instanceof Error ? err.message : 'Unable to load the dashboard.');
     } finally {
       setLoading(false);
     }
@@ -54,10 +57,47 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
     );
   }
 
-  const s = summary!;
+  if (!summary) {
+    return (
+      <div className="flex min-h-96 items-center justify-center">
+        <div className="max-w-md rounded-xl border border-rose-200 bg-white p-6 text-center shadow-sm">
+          <AlertTriangle className="mx-auto mb-3 h-8 w-8 text-rose-500" />
+          <h1 className="text-lg font-bold text-slate-900">Dashboard unavailable</h1>
+          <p className="mt-2 text-sm text-slate-600">
+            {error || 'The dashboard data could not be loaded.'}
+          </p>
+          <p className="mt-2 text-xs text-slate-500">
+            Check the API deployment and database configuration, then try again.
+          </p>
+          <button
+            onClick={fetchSummary}
+            disabled={loading}
+            className="mt-4 inline-flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-white hover:bg-amber-600 disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const s = summary;
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div role="alert" className="flex items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span>Dashboard refresh failed: {error}. Showing the last loaded data.</span>
+          <button
+            onClick={fetchSummary}
+            disabled={loading}
+            className="shrink-0 font-bold underline disabled:opacity-60"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {/* Top Banner & Quick Actions */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>

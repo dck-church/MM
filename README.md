@@ -22,3 +22,7 @@ View your app in AI Studio: https://ai.studio/apps/563a9f6d-0ac9-44f6-bcbc-7bd9a
 On first startup with `DATABASE_URL`, the server creates the private `public.app_state` table and imports existing records from `data/database.json` if the table is empty. After that, Supabase is the source of truth for application records. Without `DATABASE_URL`, local development continues to use `data/database.json`; production startup requires `DATABASE_URL`.
 
 Uploaded files are still stored in `data/uploads` on the server filesystem; they are not moved to Supabase Storage by this database migration.
+
+## Deploying to Netlify
+
+Netlify builds the frontend and serves API requests through `netlify/functions/api.ts`; `netlify.toml` routes `/api/*` to that function. Set `DATABASE_URL` in the Netlify site's environment variables (for the deploy contexts you use) before deploying. The function fails clearly if the database URL is missing; never commit it or put it in a `VITE_` variable. Netlify function storage for uploaded files is temporary; move uploads to Supabase Storage before relying on borrower photos or documents being retained.

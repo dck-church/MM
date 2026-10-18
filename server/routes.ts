@@ -1,11 +1,16 @@
 import express, { Request, Response } from 'express';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { db, Loan, RepaymentScheduleItem, Payment, Borrower, Collateral, Reminder, ProfitDistribution, CashReconciliation, Expense } from './db.js';
 
 export const apiRouter = express.Router();
 
-const UPLOADS_DIR = path.resolve(process.cwd(), 'data', 'uploads');
+const UPLOADS_DIR = process.env.NETLIFY
+  ? path.join(os.tmpdir(), 'tripple-mmm-uploads')
+  : path.resolve(process.cwd(), 'data', 'uploads');
+
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 apiRouter.use((req: Request, res: Response, next) => {
   const sendJson = res.json.bind(res);

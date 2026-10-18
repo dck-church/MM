@@ -50,6 +50,42 @@ export function formatDateTime(dateStr: string | undefined): string {
   }
 }
 
+function isDashboardSummary(data: unknown): data is DashboardSummary {
+  if (!data || typeof data !== 'object') return false;
+
+  const summary = data as Record<string, unknown>;
+  const numericFields: Array<keyof DashboardSummary> = [
+    'totalBorrowers',
+    'activeBorrowers',
+    'totalApplications',
+    'awaitingApproval',
+    'loansApproved',
+    'loansDisbursed',
+    'totalPrincipalDisbursed',
+    'totalExpectedRepayments',
+    'totalRepaymentsCollected',
+    'principalOutstanding',
+    'interestOutstanding',
+    'totalOutstandingBalance',
+    'collectionsToday',
+    'loansDueToday',
+    'dueIn7Days',
+    'overdueInstallments',
+    'fullyRepaidLoans',
+    'totalExpenses',
+    'cashBalance',
+    'bankBalance',
+    'momoBalance',
+    'netIncome',
+  ];
+
+  return (
+    numericFields.every(field => typeof summary[field] === 'number') &&
+    Array.isArray(summary.monthlyTrends) &&
+    Array.isArray(summary.recentActivity)
+  );
+}
+
 export function exportToCSV(filename: string, rows: object[]) {
   if (!rows || !rows.length) return;
   const separator = ',';
@@ -130,7 +166,15 @@ export const api = {
   // Dashboard
   async getDashboardSummary(): Promise<DashboardSummary> {
     const res = await fetch('/api/dashboard/summary');
-    return res.json();
+    if (!res.ok) {
+      throw new Error(`Dashboard request failed (HTTP ${res.status}).`);
+    }
+
+    const data: unknown = await res.json();
+    if (!isDashboardSummary(data)) {
+      throw new Error('The dashboard API returned incomplete data. Please try again.');
+    }
+    return data;
   },
 
   // Borrowers
