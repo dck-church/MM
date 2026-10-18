@@ -15,6 +15,10 @@ View your app in AI Studio: https://ai.studio/apps/563a9f6d-0ac9-44f6-bcbc-7bd9a
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Copy `.env.example` to `.env` and set `DATABASE_URL` to your Supabase Postgres connection string. Keep the real connection string private and URL-encode reserved characters in its password.
 3. Run the app:
    `npm run dev`
+
+On first startup with `DATABASE_URL`, the server creates the private `public.app_state` table and imports existing records from `data/database.json` if the table is empty. After that, Supabase is the source of truth for application records. Without `DATABASE_URL`, local development continues to use `data/database.json`; production startup requires `DATABASE_URL`.
+
+Uploaded files are still stored in `data/uploads` on the server filesystem; they are not moved to Supabase Storage by this database migration.

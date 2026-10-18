@@ -7,6 +7,24 @@ export const apiRouter = express.Router();
 
 const UPLOADS_DIR = path.resolve(process.cwd(), 'data', 'uploads');
 
+apiRouter.use((req: Request, res: Response, next) => {
+  const sendJson = res.json.bind(res);
+  res.json = ((body: unknown) => {
+    void db.flush().then(
+      () => sendJson(body),
+      (err: unknown) => {
+        console.error('Failed to persist application data:', err);
+        if (!res.headersSent) {
+          res.status(500);
+          sendJson({ error: 'Failed to save application data. Please try again.' });
+        }
+      }
+    );
+    return res;
+  }) as Response['json'];
+  next();
+});
+
 // Helper to format currency
 export function formatUGX(amount: number): string {
   return 'UGX ' + Math.round(amount).toLocaleString('en-US');

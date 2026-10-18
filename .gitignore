@@ -4,5 +4,13 @@ dist/
 coverage/
 .DS_Store
 *.log
-.env*
-!.env.example
+
+# Local credentials and environment-specific configuration.
+.env
+.env.*
+!.env
+
+# Runtime records and uploaded identity documents stay out of source control.
+/data/database.json
+/data/database.json.tmp.*
+/data/uploads/

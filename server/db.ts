@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { Pool } from 'pg';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'database.json');
@@ -318,7 +319,8 @@ export interface DatabaseSchema {
 
 class JsonDatabase {
   private data: DatabaseSchema;
-  private isSaving = false;
+  private pool: Pool | null = null;
+  private saveQueue: Promise<void> = Promise.resolve();
 
   constructor() {
     this.data = this.load();
@@ -326,30 +328,117 @@ class JsonDatabase {
 
   private load(): DatabaseSchema {
     if (fs.existsSync(DB_FILE)) {
-      try {
-        const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        return JSON.parse(raw);
-      } catch (err) {
-        console.error('Error reading database file, using defaults:', err);
-      }
+      const raw = fs.readFileSync(DB_FILE, 'utf-8');
+      return JSON.parse(raw) as DatabaseSchema;
     }
-    const initial = this.getInitialSeed();
-    this.saveData(initial);
-    return initial;
+    return this.getInitialSeed();
   }
 
   private saveData(dataToSave: DatabaseSchema) {
+    const tempFile = `${DB_FILE}.tmp.${Date.now()}`;
+    fs.writeFileSync(tempFile, JSON.stringify(dataToSave, null, 2), 'utf-8');
+    fs.renameSync(tempFile, DB_FILE);
+  }
+
+  public async initialize() {
+    const configuredConnectionString = process.env.DATABASE_URL;
+    if (!configuredConnectionString) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('DATABASE_URL is required in production.');
+      }
+      if (!fs.existsSync(DB_FILE)) this.saveData(this.data);
+      console.warn('DATABASE_URL is not set; using local JSON storage.');
+      return;
+    }
+
+    let connectionString: string;
     try {
-      const tempFile = `${DB_FILE}.tmp.${Date.now()}`;
-      fs.writeFileSync(tempFile, JSON.stringify(dataToSave, null, 2), 'utf-8');
-      fs.renameSync(tempFile, DB_FILE);
+      const parsedUrl = new URL(configuredConnectionString);
+      if (parsedUrl.protocol !== 'postgres:' && parsedUrl.protocol !== 'postgresql:') {
+        throw new Error('Unsupported database URL protocol.');
+      }
+      connectionString = parsedUrl.href;
     } catch (err) {
-      console.error('Error saving database:', err);
+      throw new Error(
+        'DATABASE_URL must be a valid PostgreSQL URL. URL-encode reserved characters in its credentials (for example, use %40 for @).',
+        { cause: err }
+      );
+    }
+
+    this.pool = new Pool({
+      connectionString,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+    });
+
+    try {
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS public.app_state (
+          id text PRIMARY KEY CHECK (id = 'main'),
+          payload jsonb NOT NULL,
+          updated_at timestamptz NOT NULL DEFAULT now()
+        )
+      `);
+      await this.pool.query('REVOKE ALL ON public.app_state FROM PUBLIC, anon, authenticated, service_role');
+
+      const existing = await this.pool.query<{ payload: DatabaseSchema }>(
+        "SELECT payload FROM public.app_state WHERE id = 'main'"
+      );
+      if (existing.rowCount === 0) {
+        await this.pool.query(
+          `INSERT INTO public.app_state (id, payload)
+           VALUES ('main', $1::jsonb)
+           ON CONFLICT (id) DO NOTHING`,
+          [JSON.stringify(this.data)]
+        );
+      }
+
+      const result = await this.pool.query<{ payload: DatabaseSchema }>(
+        "SELECT payload FROM public.app_state WHERE id = 'main'"
+      );
+      const storedData = result.rows[0]?.payload;
+      if (!storedData || !this.isDatabaseSchema(storedData)) {
+        throw new Error('The Supabase app_state row is missing or has an invalid data shape.');
+      }
+      this.data = storedData;
+      console.log('Connected to Supabase Postgres; app data is loaded from public.app_state.');
+    } catch (err) {
+      await this.pool.end();
+      this.pool = null;
+      throw new Error('Failed to initialize Supabase Postgres storage.', { cause: err });
     }
   }
 
-  public save() {
-    this.saveData(this.data);
+  private isDatabaseSchema(value: unknown): value is DatabaseSchema {
+    if (!value || typeof value !== 'object') return false;
+    const data = value as Record<string, unknown>;
+    return [
+      'users', 'borrowers', 'loans', 'collaterals', 'repayment_schedules',
+      'payments', 'reminders', 'employees', 'shareholders',
+      'profit_distributions', 'expenses', 'cash_reconciliations', 'audit_logs',
+    ].every(key => Array.isArray(data[key])) && !!data.settings && typeof data.settings === 'object';
+  }
+
+  public save(): Promise<void> {
+    if (!this.pool) {
+      this.saveData(this.data);
+      return Promise.resolve();
+    }
+
+    const snapshot = JSON.stringify(this.data);
+    const pendingSave = this.saveQueue.catch(() => {}).then(async () => {
+      await this.pool!.query(
+        "UPDATE public.app_state SET payload = $1::jsonb, updated_at = now() WHERE id = 'main'",
+        [snapshot]
+      );
+    });
+    this.saveQueue = pendingSave;
+    void pendingSave.catch(() => {});
+    return pendingSave;
+  }
+
+  public flush(): Promise<void> {
+    return this.saveQueue;
   }
 
   public getRawData(): DatabaseSchema {
@@ -358,7 +447,7 @@ class JsonDatabase {
 
   public restore(backupData: DatabaseSchema) {
     this.data = backupData;
-    this.save();
+    void this.save().catch(() => {});
   }
 
   public logAudit(entry: Omit<AuditLog, 'id' | 'timestamp'>) {
@@ -372,7 +461,7 @@ class JsonDatabase {
     if (this.data.audit_logs.length > 2000) {
       this.data.audit_logs = this.data.audit_logs.slice(0, 2000);
     }
-    this.save();
+    void this.save().catch(() => {});
   }
 
   private getInitialSeed(): DatabaseSchema {
