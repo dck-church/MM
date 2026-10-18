@@ -1,0 +1,6 @@
+{
+  "name": "Tripple MMM Investments - Loan Management & Shareholders Portal",
+  "description": "Comprehensive loan management, financial monitoring, cash reconciliation, and shareholders portal for Tripple MMM Investments Company LTD.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
